@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"time"
 )
 
@@ -15,6 +16,7 @@ type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	token      string // Changed token to private field
+	csrfToken  string // CSRF token for new Dify API
 }
 
 // AppInfo represents the basic information about a Dify application
@@ -34,9 +36,10 @@ type LoginResponse struct {
 
 // NewClient creates a new Dify API client
 func NewClient(baseURL string) *Client {
+	jar, _ := cookiejar.New(nil)
 	return &Client{
 		BaseURL:    baseURL,
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		HTTPClient: &http.Client{Timeout: 30 * time.Second, Jar: jar},
 	}
 }
 
@@ -73,14 +76,28 @@ func (c *Client) Login(email, password string) error {
 		return fmt.Errorf("login API returned error: status=%d, body=%s", resp.StatusCode, string(body))
 	}
 
-	var loginResp LoginResponse
-	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
-		return fmt.Errorf("failed to decode login response: %w", err)
+	// Try to get access token and CSRF token from Set-Cookie header (new Dify API format)
+	for _, cookie := range resp.Cookies() {
+		switch cookie.Name {
+		case "__Host-access_token":
+			c.token = cookie.Value
+		case "__Host-csrf_token":
+			c.csrfToken = cookie.Value
+		}
 	}
 
-	// Store the access token
-	c.token = loginResp.Data.AccessToken
-	return nil
+	if c.token != "" {
+		return nil
+	}
+
+	// Fallback: try to get token from response body (legacy format)
+	var loginResp LoginResponse
+	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err == nil && loginResp.Data.AccessToken != "" {
+		c.token = loginResp.Data.AccessToken
+		return nil
+	}
+
+	return fmt.Errorf("login succeeded but no access token found in response")
 }
 
 // GetAppInfo fetches application information from Dify
@@ -98,6 +115,9 @@ func (c *Client) GetAppInfo(appID string) (*AppInfo, error) {
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
 	req.Header.Set("Content-Type", "application/json")
+	if c.csrfToken != "" {
+		req.Header.Set("X-CSRF-Token", c.csrfToken)
+	}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -189,6 +209,9 @@ func (c *Client) GetDSL(appID string) ([]byte, error) {
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+	if c.csrfToken != "" {
+		req.Header.Set("X-CSRF-Token", c.csrfToken)
+	}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -227,6 +250,9 @@ func (c *Client) DoesDSLExist(appID string) (bool, error) {
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
 	req.Header.Set("Content-Type", "application/json")
+	if c.csrfToken != "" {
+		req.Header.Set("X-CSRF-Token", c.csrfToken)
+	}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -274,6 +300,9 @@ func (c *Client) GetAppList() ([]AppInfo, error) {
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
 	req.Header.Set("Content-Type", "application/json")
+	if c.csrfToken != "" {
+		req.Header.Set("X-CSRF-Token", c.csrfToken)
+	}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
