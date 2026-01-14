@@ -283,93 +283,110 @@ func min(a, b int) int {
 	return b
 }
 
-// GetAppList fetches all applications from Dify
+// GetAppList fetches all applications from Dify with pagination support
 func (c *Client) GetAppList() ([]AppInfo, error) {
 	if c.token == "" {
 		return nil, fmt.Errorf("not authenticated, call Login() first")
 	}
 
-	url := fmt.Sprintf("%s/console/api/apps", c.BaseURL)
+	var allApps []AppInfo
+	page := 1
 
-	fmt.Printf("Debug - Using app list URL: %s\n", url)
+	for {
+		url := fmt.Sprintf("%s/console/api/apps?page=%d", c.BaseURL, page)
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+		fmt.Printf("Debug - Using app list URL: %s\n", url)
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
-	req.Header.Set("Content-Type", "application/json")
-	if c.csrfToken != "" {
-		req.Header.Set("X-CSRF-Token", c.csrfToken)
-	}
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned error: status=%d, url=%s, body=%s", resp.StatusCode, url, string(body))
-	}
-
-	// Save response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Debug output
-	fmt.Printf("Debug - GetAppList Raw API Response: %s\n", string(body))
-
-	// New implementation: use map for more flexible parsing
-	var rawData map[string]interface{}
-	if err := json.Unmarshal(body, &rawData); err != nil {
-		return nil, fmt.Errorf("failed to decode JSON to map: %w", err)
-	}
-
-	// Get data array
-	dataInterface, hasData := rawData["data"]
-	if !hasData {
-		return nil, fmt.Errorf("API response does not contain 'data' field")
-	}
-
-	dataArray, isArray := dataInterface.([]interface{})
-	if !isArray {
-		return nil, fmt.Errorf("API response 'data' is not an array")
-	}
-
-	// Create app info slice
-	apps := make([]AppInfo, 0, len(dataArray))
-
-	// Get each app's information
-	for _, item := range dataArray {
-		appData, isMap := item.(map[string]interface{})
-		if !isMap {
-			continue
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
 
-		app := AppInfo{}
-
-		// Set each field
-		if id, ok := appData["id"].(string); ok {
-			app.ID = id
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+		req.Header.Set("Content-Type", "application/json")
+		if c.csrfToken != "" {
+			req.Header.Set("X-CSRF-Token", c.csrfToken)
 		}
 
-		if name, ok := appData["name"].(string); ok {
-			app.Name = name
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to execute request: %w", err)
 		}
 
-		// Get updated_at directly
-		if updatedAt, exists := appData["updated_at"]; exists {
-			app.UpdatedAt = updatedAt
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("API returned error: status=%d, url=%s, body=%s", resp.StatusCode, url, string(body))
 		}
 
-		apps = append(apps, app)
+		// Save response body
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		// Debug output (truncate for readability)
+		if len(body) > 500 {
+			fmt.Printf("Debug - GetAppList Raw API Response (page %d): %s...(truncated)\n", page, string(body[:500]))
+		} else {
+			fmt.Printf("Debug - GetAppList Raw API Response (page %d): %s\n", page, string(body))
+		}
+
+		// Parse response
+		var rawData map[string]interface{}
+		if err := json.Unmarshal(body, &rawData); err != nil {
+			return nil, fmt.Errorf("failed to decode JSON to map: %w", err)
+		}
+
+		// Get data array
+		dataInterface, hasData := rawData["data"]
+		if !hasData {
+			return nil, fmt.Errorf("API response does not contain 'data' field")
+		}
+
+		dataArray, isArray := dataInterface.([]interface{})
+		if !isArray {
+			return nil, fmt.Errorf("API response 'data' is not an array")
+		}
+
+		// Get each app's information
+		for _, item := range dataArray {
+			appData, isMap := item.(map[string]interface{})
+			if !isMap {
+				continue
+			}
+
+			app := AppInfo{}
+
+			// Set each field
+			if id, ok := appData["id"].(string); ok {
+				app.ID = id
+			}
+
+			if name, ok := appData["name"].(string); ok {
+				app.Name = name
+			}
+
+			// Get updated_at directly
+			if updatedAt, exists := appData["updated_at"]; exists {
+				app.UpdatedAt = updatedAt
+			}
+
+			allApps = append(allApps, app)
+		}
+
+		fmt.Printf("Debug - Parsed %d apps from page %d (total so far: %d)\n", len(dataArray), page, len(allApps))
+
+		// Check if there are more pages
+		hasMore, _ := rawData["has_more"].(bool)
+		if !hasMore {
+			break
+		}
+
+		page++
 	}
 
-	fmt.Printf("Debug - Parsed %d apps from response\n", len(apps))
-	return apps, nil
+	fmt.Printf("Debug - Total apps fetched: %d\n", len(allApps))
+	return allApps, nil
 }

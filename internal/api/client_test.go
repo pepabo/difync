@@ -465,6 +465,150 @@ func TestGetAppList(t *testing.T) {
 	}
 }
 
+// TestGetAppListPagination tests the GetAppList method with pagination
+func TestGetAppListPagination(t *testing.T) {
+	requestCount := 0
+
+	// Create a test server that returns paginated results
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check request method
+		if r.Method != "GET" {
+			t.Errorf("Expected request method to be GET, got %s", r.Method)
+		}
+
+		// Check request path
+		if r.URL.Path != "/console/api/apps" {
+			t.Errorf("Expected request path to be /console/api/apps, got %s", r.URL.Path)
+		}
+
+		// Check authorization header
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer test-token" {
+			t.Errorf("Expected Authorization header to be 'Bearer test-token', got '%s'", auth)
+		}
+
+		requestCount++
+		page := r.URL.Query().Get("page")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		// Return different responses based on page
+		switch page {
+		case "1", "":
+			w.Write([]byte(`{
+				"page": 1,
+				"limit": 2,
+				"total": 5,
+				"has_more": true,
+				"data": [
+					{"id": "app-id-1", "name": "App 1", "updated_at": "2023-01-01T12:00:00Z"},
+					{"id": "app-id-2", "name": "App 2", "updated_at": "2023-01-02T12:00:00Z"}
+				]
+			}`))
+		case "2":
+			w.Write([]byte(`{
+				"page": 2,
+				"limit": 2,
+				"total": 5,
+				"has_more": true,
+				"data": [
+					{"id": "app-id-3", "name": "App 3", "updated_at": "2023-01-03T12:00:00Z"},
+					{"id": "app-id-4", "name": "App 4", "updated_at": "2023-01-04T12:00:00Z"}
+				]
+			}`))
+		case "3":
+			w.Write([]byte(`{
+				"page": 3,
+				"limit": 2,
+				"total": 5,
+				"has_more": false,
+				"data": [
+					{"id": "app-id-5", "name": "App 5", "updated_at": "2023-01-05T12:00:00Z"}
+				]
+			}`))
+		default:
+			t.Errorf("Unexpected page requested: %s", page)
+		}
+	}))
+	defer server.Close()
+
+	// Create client with test server URL
+	client := NewClient(server.URL)
+	client.token = "test-token"
+
+	// Call the method
+	apps, err := client.GetAppList()
+
+	// Check for errors
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Verify all pages were requested
+	if requestCount != 3 {
+		t.Errorf("Expected 3 requests (for 3 pages), got %d", requestCount)
+	}
+
+	// Check total number of apps
+	if len(apps) != 5 {
+		t.Errorf("Expected 5 apps from pagination, got %d", len(apps))
+	}
+
+	// Verify all apps are present
+	expectedIDs := []string{"app-id-1", "app-id-2", "app-id-3", "app-id-4", "app-id-5"}
+	for i, expectedID := range expectedIDs {
+		if i >= len(apps) {
+			t.Errorf("Missing app at index %d", i)
+			continue
+		}
+		if apps[i].ID != expectedID {
+			t.Errorf("Expected app %d to have ID %s, got %s", i, expectedID, apps[i].ID)
+		}
+	}
+}
+
+// TestGetAppListNoPagination tests GetAppList when has_more is false
+func TestGetAppListNoPagination(t *testing.T) {
+	requestCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"page": 1,
+			"limit": 20,
+			"total": 2,
+			"has_more": false,
+			"data": [
+				{"id": "app-id-1", "name": "App 1", "updated_at": "2023-01-01T12:00:00Z"},
+				{"id": "app-id-2", "name": "App 2", "updated_at": "2023-01-02T12:00:00Z"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	client.token = "test-token"
+
+	apps, err := client.GetAppList()
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Should only make one request when has_more is false
+	if requestCount != 1 {
+		t.Errorf("Expected 1 request when has_more is false, got %d", requestCount)
+	}
+
+	if len(apps) != 2 {
+		t.Errorf("Expected 2 apps, got %d", len(apps))
+	}
+}
+
 func TestMin(t *testing.T) {
 	testCases := []struct {
 		a, b     int
