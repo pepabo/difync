@@ -44,6 +44,7 @@ const (
 type SyncStats struct {
 	Total     int
 	Downloads int
+	Added     int
 	NoAction  int
 	Errors    int
 	StartTime time.Time

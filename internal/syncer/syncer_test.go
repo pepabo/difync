@@ -2018,3 +2018,172 @@ func TestSyncAllWithRenamedApps(t *testing.T) {
 		t.Errorf("Expected Total to be 2, got %d", stats.Total)
 	}
 }
+
+func TestSyncAllWithNewApps(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir, err := os.MkdirTemp("", "difync-test-")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create a test DSL directory
+	dslDir := filepath.Join(tmpDir, "dsl")
+	err = os.Mkdir(dslDir, 0755)
+	if err != nil {
+		t.Fatalf("Failed to create DSL directory: %v", err)
+	}
+
+	// Create an existing DSL file
+	existingFilename := "Existing_App.yaml"
+	existingFilePath := filepath.Join(dslDir, existingFilename)
+	err = os.WriteFile(existingFilePath, []byte("name: Existing App\nversion: 1.0.0"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create existing DSL file: %v", err)
+	}
+
+	// Create an app map with only one app (simulating existing state)
+	appMapPath := filepath.Join(tmpDir, "app_map.json")
+	appMap := AppMap{
+		Apps: []AppMapping{
+			{
+				Filename: existingFilename,
+				AppID:    "existing-app-id",
+			},
+		},
+	}
+	appMapFile, err := os.Create(appMapPath)
+	if err != nil {
+		t.Fatalf("Failed to create app map file: %v", err)
+	}
+	err = json.NewEncoder(appMapFile).Encode(appMap)
+	appMapFile.Close()
+	if err != nil {
+		t.Fatalf("Failed to write app map file: %v", err)
+	}
+
+	// Create a test server that returns the existing app plus a new app
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Handle login
+		if r.URL.Path == "/console/api/login" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"result": "success", "data": {"access_token": "test-token"}}`))
+			return
+		}
+
+		// Handle app list - return both existing and new app
+		if r.URL.Path == "/console/api/apps" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"data": [
+					{
+						"id": "existing-app-id",
+						"name": "Existing App",
+						"updated_at": "2023-01-01T12:00:00Z"
+					},
+					{
+						"id": "new-app-id",
+						"name": "New App",
+						"updated_at": "2023-01-02T12:00:00Z"
+					}
+				]
+			}`))
+			return
+		}
+
+		// Handle app info for existing app
+		if r.URL.Path == "/console/api/apps/existing-app-id" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"data": {
+					"id": "existing-app-id",
+					"name": "Existing App",
+					"updated_at": "2023-01-01T12:00:00Z"
+				}
+			}`))
+			return
+		}
+
+		// Handle DSL export for new app
+		if r.URL.Path == "/console/api/apps/new-app-id/export" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"data": "name: New App\nversion: 1.0.0"
+			}`))
+			return
+		}
+
+		// Handle checks for app existence
+		if strings.HasSuffix(r.URL.Path, "/check") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"exists": true}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	// Create syncer with test configuration
+	config := Config{
+		DifyBaseURL:  server.URL,
+		DifyEmail:    "test@example.com",
+		DifyPassword: "testpassword",
+		DSLDirectory: dslDir,
+		AppMapFile:   appMapPath,
+		Verbose:      true,
+	}
+	syncer := NewSyncer(config)
+
+	// Run SyncAll
+	stats, err := syncer.SyncAll()
+	if err != nil {
+		t.Fatalf("Failed to sync all: %v", err)
+	}
+
+	// Check that the new app was added
+	expectedNewFilename := "New_App.yaml"
+	newFilePath := filepath.Join(dslDir, expectedNewFilename)
+	if _, err := os.Stat(newFilePath); os.IsNotExist(err) {
+		t.Errorf("Expected new file %s to exist", expectedNewFilename)
+	}
+
+	// Check the app map has been updated with the new app
+	updatedAppMap, err := syncer.LoadAppMap()
+	if err != nil {
+		t.Fatalf("Failed to load updated app map: %v", err)
+	}
+
+	if len(updatedAppMap.Apps) != 2 {
+		t.Errorf("Expected 2 apps in app map, got %d", len(updatedAppMap.Apps))
+	}
+
+	// Check that the new app is in the app map
+	foundNewApp := false
+	for _, app := range updatedAppMap.Apps {
+		if app.AppID == "new-app-id" {
+			if app.Filename != expectedNewFilename {
+				t.Errorf("Expected new app to have filename %s, got %s",
+					expectedNewFilename, app.Filename)
+			}
+			foundNewApp = true
+		}
+	}
+
+	if !foundNewApp {
+		t.Errorf("New app mapping not found in updated app map")
+	}
+
+	// Check statistics
+	if stats.Added != 1 {
+		t.Errorf("Expected Added to be 1, got %d", stats.Added)
+	}
+	if stats.Total != 2 {
+		t.Errorf("Expected Total to be 2, got %d", stats.Total)
+	}
+}

@@ -123,6 +123,7 @@ func printStats(stats *syncer.SyncStats, duration time.Duration) {
 	fmt.Println("\nSync Summary:")
 	fmt.Printf("Total apps: %d\n", stats.Total)
 	fmt.Printf("Downloads: %d\n", stats.Downloads)
+	fmt.Printf("Added: %d\n", stats.Added)
 	fmt.Printf("No action (in sync): %d\n", stats.NoAction)
 	fmt.Printf("Errors: %d\n", stats.Errors)
 	fmt.Printf("Duration: %v\n", duration)

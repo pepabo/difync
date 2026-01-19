@@ -108,31 +108,8 @@ func (s *DefaultSyncer) InitializeAppMap() (*AppMap, error) {
 
 	// For each app, add an entry to the app map
 	for _, app := range appList {
-		// Create a safe filename from app name
-		// Preserve non-ASCII characters like Japanese
-		safeName := s.sanitizeFilename(app.Name)
-		fmt.Printf("Debug - sanitizeFilename(%q) = %q\n", app.Name, safeName)
-		filename := safeName + ".yaml"
-
-		// Avoid duplicate filenames
-		// Check if file exists in filesystem
-		fileExists := s.fileExists(filepath.Join(s.config.DSLDirectory, filename))
-		// Check if filename is already used in the map
-		filenameUsed := usedFilenames[filename]
-
-		counter := 1
-		baseName := safeName
-
-		// Loop until a unique filename is found
-		for fileExists || filenameUsed {
-			fmt.Printf("Debug - File exists or already used: %s, incrementing counter to %d\n", filename, counter)
-			filename = fmt.Sprintf("%s_%d.yaml", baseName, counter)
-			fileExists = s.fileExists(filepath.Join(s.config.DSLDirectory, filename))
-			filenameUsed = usedFilenames[filename]
-			counter++
-		}
-
-		fmt.Printf("Debug - Final filename for app %q (ID: %s): %s\n", app.Name, app.ID, filename)
+		// Generate unique filename using shared helper
+		filename := s.generateUniqueFilename(app.Name, usedFilenames)
 
 		// Record the filename as used
 		usedFilenames[filename] = true
@@ -189,6 +166,32 @@ func (s *DefaultSyncer) InitializeAppMap() (*AppMap, error) {
 func (s *DefaultSyncer) fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
+}
+
+// generateUniqueFilename generates a unique filename for an app, avoiding duplicates
+func (s *DefaultSyncer) generateUniqueFilename(appName string, usedFilenames map[string]bool) string {
+	safeName := s.sanitizeFilename(appName)
+	fmt.Printf("Debug - sanitizeFilename(%q) = %q\n", appName, safeName)
+	filename := safeName + ".yaml"
+
+	// Check if file exists in filesystem or already used in map
+	fileExists := s.fileExists(filepath.Join(s.config.DSLDirectory, filename))
+	filenameUsed := usedFilenames[filename]
+
+	counter := 1
+	baseName := safeName
+
+	// Loop until a unique filename is found
+	for fileExists || filenameUsed {
+		fmt.Printf("Debug - File exists or already used: %s, incrementing counter to %d\n", filename, counter)
+		filename = fmt.Sprintf("%s_%d.yaml", baseName, counter)
+		fileExists = s.fileExists(filepath.Join(s.config.DSLDirectory, filename))
+		filenameUsed = usedFilenames[filename]
+		counter++
+	}
+
+	fmt.Printf("Debug - Final filename for app %q: %s\n", appName, filename)
+	return filename
 }
 
 // sanitizeFilename creates a safe filename from an app name
@@ -362,8 +365,63 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 		}
 	}
 
-	// Update app map if apps were deleted or renamed
-	if (len(deletedApps) > 0 || len(renamedApps) > 0) && !s.config.DryRun {
+	// Detect and add new apps from remote
+	existingAppIDs := make(map[string]bool)
+	for _, app := range appMap.Apps {
+		existingAppIDs[app.AppID] = true
+	}
+
+	// Track used filenames for deduplication
+	usedFilenames := make(map[string]bool)
+	for _, app := range appMap.Apps {
+		usedFilenames[app.Filename] = true
+	}
+
+	newApps := []AppMapping{}
+	for appID, appInfo := range remoteApps {
+		if !existingAppIDs[appID] {
+			// New app found
+			filename := s.generateUniqueFilename(appInfo.Name, usedFilenames)
+			usedFilenames[filename] = true
+
+			newApp := AppMapping{
+				Filename: filename,
+				AppID:    appID,
+			}
+			newApps = append(newApps, newApp)
+
+			if s.config.Verbose {
+				fmt.Printf("New app found: %s (ID: %s) -> %s\n", appInfo.Name, appID, filename)
+			}
+
+			// Download DSL for new app
+			localPath := filepath.Join(s.config.DSLDirectory, filename)
+			if !s.config.DryRun {
+				dsl, err := s.client.GetDSL(appID)
+				if err != nil {
+					fmt.Printf("Warning: Failed to download DSL for new app %s: %v\n", appInfo.Name, err)
+					stats.Errors++
+					continue
+				}
+
+				if err := os.WriteFile(localPath, dsl, 0644); err != nil {
+					fmt.Printf("Warning: Failed to write DSL file for new app %s: %v\n", appInfo.Name, err)
+					stats.Errors++
+					continue
+				}
+
+				if s.config.Verbose {
+					fmt.Printf("Downloaded DSL for new app %s to %s\n", appInfo.Name, localPath)
+				}
+			}
+
+			stats.Added++
+			stats.Total++
+		}
+	}
+
+	// Update app map if apps were deleted, renamed, or added
+	if (len(deletedApps) > 0 || len(renamedApps) > 0 || len(newApps) > 0) && !s.config.DryRun {
 		// Create new app map without deleted apps and with updated filenames
 		updatedApps := make([]AppMapping, 0, len(appMap.Apps)-len(deletedApps))
 
@@ -397,6 +455,9 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 			}
 		}
 
+		// Add new apps
+		updatedApps = append(updatedApps, newApps...)
+
 		// Save updated app map
 		updatedAppMap := &AppMap{
 			Apps: updatedApps,
@@ -420,6 +481,9 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 			}
 			if len(renamedApps) > 0 {
 				fmt.Printf("Updated %d app names in app map\n", len(renamedApps))
+			}
+			if len(newApps) > 0 {
+				fmt.Printf("Added %d new apps to app map\n", len(newApps))
 			}
 		}
 	}
