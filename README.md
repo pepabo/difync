@@ -2,6 +2,10 @@
 
 Difync is a command-line tool for downloading [Dify.AI](https://dify.ai) workflow DSLs (YAML) from Dify's API to your local filesystem. It allows you to version control your Dify workflows using Git.
 
+## Requirements
+
+- **Dify version 1.11.4 or later** (uses Base64-encoded password for authentication)
+
 ## Features
 
 - Download workflows from Dify to your local filesystem
