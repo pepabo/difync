@@ -2187,3 +2187,288 @@ func TestSyncAllWithNewApps(t *testing.T) {
 		t.Errorf("Expected Total to be 2, got %d", stats.Total)
 	}
 }
+
+func TestSyncAllWithNewAppsDSLFetchFails(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir, err := os.MkdirTemp("", "difync-test-")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create a test DSL directory
+	dslDir := filepath.Join(tmpDir, "dsl")
+	err = os.Mkdir(dslDir, 0755)
+	if err != nil {
+		t.Fatalf("Failed to create DSL directory: %v", err)
+	}
+
+	// Create an existing DSL file
+	existingFilename := "Existing_App.yaml"
+	existingFilePath := filepath.Join(dslDir, existingFilename)
+	err = os.WriteFile(existingFilePath, []byte("name: Existing App\nversion: 1.0.0"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create existing DSL file: %v", err)
+	}
+
+	// Create an app map with only one app
+	appMapPath := filepath.Join(tmpDir, "app_map.json")
+	appMap := AppMap{
+		Apps: []AppMapping{
+			{
+				Filename: existingFilename,
+				AppID:    "existing-app-id",
+			},
+		},
+	}
+	appMapFile, err := os.Create(appMapPath)
+	if err != nil {
+		t.Fatalf("Failed to create app map file: %v", err)
+	}
+	err = json.NewEncoder(appMapFile).Encode(appMap)
+	appMapFile.Close()
+	if err != nil {
+		t.Fatalf("Failed to write app map file: %v", err)
+	}
+
+	// Create a test server that returns error for new app's DSL export
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/console/api/login" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"result": "success", "data": {"access_token": "test-token"}}`))
+			return
+		}
+
+		if r.URL.Path == "/console/api/apps" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"data": [
+					{
+						"id": "existing-app-id",
+						"name": "Existing App",
+						"updated_at": "2023-01-01T12:00:00Z"
+					},
+					{
+						"id": "new-app-id",
+						"name": "New App",
+						"updated_at": "2023-01-02T12:00:00Z"
+					}
+				]
+			}`))
+			return
+		}
+
+		if r.URL.Path == "/console/api/apps/existing-app-id" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"data": {
+					"id": "existing-app-id",
+					"name": "Existing App",
+					"updated_at": "2023-01-01T12:00:00Z"
+				}
+			}`))
+			return
+		}
+
+		// Return error for new app's DSL export
+		if r.URL.Path == "/console/api/apps/new-app-id/export" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "Internal Server Error"}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	config := Config{
+		DifyBaseURL:  server.URL,
+		DifyEmail:    "test@example.com",
+		DifyPassword: "testpassword",
+		DSLDirectory: dslDir,
+		AppMapFile:   appMapPath,
+		Verbose:      true,
+	}
+	syncer := NewSyncer(config)
+
+	stats, err := syncer.SyncAll()
+	if err != nil {
+		t.Fatalf("Failed to sync all: %v", err)
+	}
+
+	// New app file should NOT exist because DSL fetch failed
+	newFilePath := filepath.Join(dslDir, "New_App.yaml")
+	if _, err := os.Stat(newFilePath); !os.IsNotExist(err) {
+		t.Errorf("Expected new file to NOT exist when DSL fetch fails")
+	}
+
+	// App map should NOT contain the new app
+	updatedAppMap, err := syncer.LoadAppMap()
+	if err != nil {
+		t.Fatalf("Failed to load updated app map: %v", err)
+	}
+
+	if len(updatedAppMap.Apps) != 1 {
+		t.Errorf("Expected 1 app in app map (new app should not be added), got %d", len(updatedAppMap.Apps))
+	}
+
+	// Check statistics
+	if stats.Added != 0 {
+		t.Errorf("Expected Added to be 0 (DSL fetch failed), got %d", stats.Added)
+	}
+	if stats.Errors != 1 {
+		t.Errorf("Expected Errors to be 1, got %d", stats.Errors)
+	}
+}
+
+func TestSyncAllWithNewAppsPartialFailure(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir, err := os.MkdirTemp("", "difync-test-")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create a test DSL directory
+	dslDir := filepath.Join(tmpDir, "dsl")
+	err = os.Mkdir(dslDir, 0755)
+	if err != nil {
+		t.Fatalf("Failed to create DSL directory: %v", err)
+	}
+
+	// Create an app map with no apps
+	appMapPath := filepath.Join(tmpDir, "app_map.json")
+	appMap := AppMap{
+		Apps: []AppMapping{},
+	}
+	appMapFile, err := os.Create(appMapPath)
+	if err != nil {
+		t.Fatalf("Failed to create app map file: %v", err)
+	}
+	err = json.NewEncoder(appMapFile).Encode(appMap)
+	appMapFile.Close()
+	if err != nil {
+		t.Fatalf("Failed to write app map file: %v", err)
+	}
+
+	// Create a test server: 3 new apps, 1 fails DSL fetch
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/console/api/login" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"result": "success", "data": {"access_token": "test-token"}}`))
+			return
+		}
+
+		if r.URL.Path == "/console/api/apps" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"data": [
+					{
+						"id": "app-1",
+						"name": "App One",
+						"updated_at": "2023-01-01T12:00:00Z"
+					},
+					{
+						"id": "app-2",
+						"name": "App Two",
+						"updated_at": "2023-01-02T12:00:00Z"
+					},
+					{
+						"id": "app-3",
+						"name": "App Three",
+						"updated_at": "2023-01-03T12:00:00Z"
+					}
+				]
+			}`))
+			return
+		}
+
+		// DSL export: app-1 and app-3 succeed, app-2 fails
+		if r.URL.Path == "/console/api/apps/app-1/export" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"data": "name: App One\nversion: 1.0.0"}`))
+			return
+		}
+		if r.URL.Path == "/console/api/apps/app-2/export" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "Internal Server Error"}`))
+			return
+		}
+		if r.URL.Path == "/console/api/apps/app-3/export" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"data": "name: App Three\nversion: 1.0.0"}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	config := Config{
+		DifyBaseURL:  server.URL,
+		DifyEmail:    "test@example.com",
+		DifyPassword: "testpassword",
+		DSLDirectory: dslDir,
+		AppMapFile:   appMapPath,
+		Verbose:      true,
+	}
+	syncer := NewSyncer(config)
+
+	stats, err := syncer.SyncAll()
+	if err != nil {
+		t.Fatalf("Failed to sync all: %v", err)
+	}
+
+	// Load updated app map
+	updatedAppMap, err := syncer.LoadAppMap()
+	if err != nil {
+		t.Fatalf("Failed to load updated app map: %v", err)
+	}
+
+	// Only 2 apps should be in the app map (app-2 failed)
+	if len(updatedAppMap.Apps) != 2 {
+		t.Errorf("Expected 2 apps in app map, got %d", len(updatedAppMap.Apps))
+	}
+
+	// Check that app-1 and app-3 are in the map, but not app-2
+	appIDs := make(map[string]bool)
+	for _, app := range updatedAppMap.Apps {
+		appIDs[app.AppID] = true
+	}
+
+	if !appIDs["app-1"] {
+		t.Errorf("Expected app-1 to be in app map")
+	}
+	if appIDs["app-2"] {
+		t.Errorf("Expected app-2 to NOT be in app map (DSL fetch failed)")
+	}
+	if !appIDs["app-3"] {
+		t.Errorf("Expected app-3 to be in app map")
+	}
+
+	// Check files exist
+	if _, err := os.Stat(filepath.Join(dslDir, "App_One.yaml")); os.IsNotExist(err) {
+		t.Errorf("Expected App_One.yaml to exist")
+	}
+	if _, err := os.Stat(filepath.Join(dslDir, "App_Two.yaml")); !os.IsNotExist(err) {
+		t.Errorf("Expected App_Two.yaml to NOT exist")
+	}
+	if _, err := os.Stat(filepath.Join(dslDir, "App_Three.yaml")); os.IsNotExist(err) {
+		t.Errorf("Expected App_Three.yaml to exist")
+	}
+
+	// Check statistics
+	if stats.Added != 2 {
+		t.Errorf("Expected Added to be 2, got %d", stats.Added)
+	}
+	if stats.Errors != 1 {
+		t.Errorf("Expected Errors to be 1, got %d", stats.Errors)
+	}
+}
