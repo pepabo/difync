@@ -388,7 +388,6 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 				Filename: filename,
 				AppID:    appID,
 			}
-			newApps = append(newApps, newApp)
 
 			if s.config.Verbose {
 				fmt.Printf("New app found: %s (ID: %s) -> %s\n", appInfo.Name, appID, filename)
@@ -415,6 +414,8 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 				}
 			}
 
+			// Only add to newApps after successful download and write
+			newApps = append(newApps, newApp)
 			stats.Added++
 			stats.Total++
 		}
