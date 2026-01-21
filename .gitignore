@@ -18,6 +18,9 @@ go.work
 # Environment variables
 .env
 
+# Cookie files
+cookies*.txt
+
 # DSL files and app map
 /dsl/
 app_map.json
