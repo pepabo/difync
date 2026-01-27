@@ -3,6 +3,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,10 +49,13 @@ func NewClient(baseURL string) *Client {
 func (c *Client) Login(email, password string) error {
 	url := fmt.Sprintf("%s/console/api/login", c.BaseURL)
 
+	// Encode password with Base64 (required by new Dify API)
+	encodedPassword := base64.StdEncoding.EncodeToString([]byte(password))
+
 	// Create login payload
 	loginData := map[string]string{
 		"email":    email,
-		"password": password,
+		"password": encodedPassword,
 	}
 
 	payload, err := json.Marshal(loginData)
