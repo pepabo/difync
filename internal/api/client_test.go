@@ -1,7 +1,10 @@
 package api
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -32,6 +35,10 @@ func TestNewClient(t *testing.T) {
 }
 
 func TestLogin(t *testing.T) {
+	testEmail := "test@example.com"
+	testPassword := "password123"
+	expectedEncodedPassword := base64.StdEncoding.EncodeToString([]byte(testPassword))
+
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check request method
@@ -42,6 +49,42 @@ func TestLogin(t *testing.T) {
 		// Check request path
 		if r.URL.Path != "/console/api/login" {
 			t.Errorf("Expected request path to be /console/api/login, got %s", r.URL.Path)
+		}
+
+		// Check Content-Type header
+		contentType := r.Header.Get("Content-Type")
+		if contentType != "application/json" {
+			t.Errorf("Expected Content-Type to be application/json, got %s", contentType)
+		}
+
+		// Read and verify request body
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("Failed to read request body: %v", err)
+		}
+
+		var loginData map[string]string
+		if err := json.Unmarshal(body, &loginData); err != nil {
+			t.Fatalf("Failed to parse request body as JSON: %v", err)
+		}
+
+		// Verify email
+		if loginData["email"] != testEmail {
+			t.Errorf("Expected email to be %s, got %s", testEmail, loginData["email"])
+		}
+
+		// Verify password is Base64 encoded
+		if loginData["password"] != expectedEncodedPassword {
+			t.Errorf("Expected password to be Base64 encoded (%s), got %s", expectedEncodedPassword, loginData["password"])
+		}
+
+		// Verify the encoded password can be decoded back to original
+		decodedPassword, err := base64.StdEncoding.DecodeString(loginData["password"])
+		if err != nil {
+			t.Errorf("Password is not valid Base64: %v", err)
+		}
+		if string(decodedPassword) != testPassword {
+			t.Errorf("Decoded password does not match original: expected %s, got %s", testPassword, string(decodedPassword))
 		}
 
 		// Return a mock response
@@ -60,7 +103,7 @@ func TestLogin(t *testing.T) {
 	client := NewClient(server.URL)
 
 	// Call the method
-	err := client.Login("test@example.com", "password")
+	err := client.Login(testEmail, testPassword)
 
 	// Check for errors
 	if err != nil {
@@ -70,6 +113,46 @@ func TestLogin(t *testing.T) {
 	// Check token was set
 	if client.token != "test-access-token" {
 		t.Errorf("Expected token to be 'test-access-token', got '%s'", client.token)
+	}
+}
+
+func TestLoginWithCookieAuth(t *testing.T) {
+	testEmail := "test@example.com"
+	testPassword := "password123"
+
+	// Create a test server that returns cookies (new Dify API format)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set cookies for new Dify API format
+		http.SetCookie(w, &http.Cookie{
+			Name:  "__Host-access_token",
+			Value: "cookie-access-token",
+		})
+		http.SetCookie(w, &http.Cookie{
+			Name:  "__Host-csrf_token",
+			Value: "cookie-csrf-token",
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"result": "success"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	err := client.Login(testEmail, testPassword)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Check token was set from cookie
+	if client.token != "cookie-access-token" {
+		t.Errorf("Expected token to be 'cookie-access-token', got '%s'", client.token)
+	}
+
+	// Check CSRF token was set from cookie
+	if client.csrfToken != "cookie-csrf-token" {
+		t.Errorf("Expected csrfToken to be 'cookie-csrf-token', got '%s'", client.csrfToken)
 	}
 }
 
