@@ -16,6 +16,7 @@ import (
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
+	Verbose    bool   // Enable verbose debug output
 	token      string // Changed token to private field
 	csrfToken  string // CSRF token for new Dify API
 }
@@ -141,7 +142,9 @@ func (c *Client) GetAppInfo(appID string) (*AppInfo, error) {
 	}
 
 	// Debug output
-	fmt.Printf("Debug - Raw API Response: %s\n", string(body))
+	if c.Verbose {
+		fmt.Printf("Debug - Raw API Response: %s\n", string(body))
+	}
 
 	// Decode JSON directly to map to avoid mapping issues
 	var rawData map[string]interface{}
@@ -165,11 +168,15 @@ func (c *Client) GetAppInfo(appID string) (*AppInfo, error) {
 			// Get and set updated_at directly
 			if updatedAt, exists := appData["updated_at"]; exists {
 				appInfo.UpdatedAt = updatedAt
-				fmt.Printf("Debug - Found updated_at in data: %v (type: %T)\n", updatedAt, updatedAt)
-			} else {
+				if c.Verbose {
+					fmt.Printf("Debug - Found updated_at in data: %v (type: %T)\n", updatedAt, updatedAt)
+				}
+			} else if c.Verbose {
 				fmt.Printf("Debug - updated_at field not found in data\n")
 			}
-			fmt.Printf("Debug - Constructed AppInfo from data: %+v\n", appInfo)
+			if c.Verbose {
+				fmt.Printf("Debug - Constructed AppInfo from data: %+v\n", appInfo)
+			}
 			return appInfo, nil
 		}
 	}
@@ -188,12 +195,16 @@ func (c *Client) GetAppInfo(appID string) (*AppInfo, error) {
 	// Get and set updated_at directly from top-level
 	if updatedAt, exists := rawData["updated_at"]; exists {
 		appInfo.UpdatedAt = updatedAt
-		fmt.Printf("Debug - Found updated_at in raw response: %v (type: %T)\n", updatedAt, updatedAt)
-	} else {
+		if c.Verbose {
+			fmt.Printf("Debug - Found updated_at in raw response: %v (type: %T)\n", updatedAt, updatedAt)
+		}
+	} else if c.Verbose {
 		fmt.Printf("Debug - updated_at field not found in response\n")
 	}
 
-	fmt.Printf("Debug - Constructed AppInfo: %+v\n", appInfo)
+	if c.Verbose {
+		fmt.Printf("Debug - Constructed AppInfo: %+v\n", appInfo)
+	}
 	return appInfo, nil
 }
 
@@ -205,7 +216,9 @@ func (c *Client) GetDSL(appID string) ([]byte, error) {
 
 	url := fmt.Sprintf("%s/console/api/apps/%s/export?include_secret=false", c.BaseURL, appID)
 
-	fmt.Printf("Debug - Using export URL: %s\n", url)
+	if c.Verbose {
+		fmt.Printf("Debug - Using export URL: %s\n", url)
+	}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -294,12 +307,14 @@ func (c *Client) GetAppList() ([]AppInfo, error) {
 	}
 
 	var allApps []AppInfo
-	page := 1
+	const maxPages = 1000
 
-	for {
+	for page := 1; page <= maxPages; page++ {
 		url := fmt.Sprintf("%s/console/api/apps?page=%d", c.BaseURL, page)
 
-		fmt.Printf("Debug - Using app list URL: %s\n", url)
+		if c.Verbose {
+			fmt.Printf("Debug - Using app list URL: %s\n", url)
+		}
 
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
@@ -331,10 +346,12 @@ func (c *Client) GetAppList() ([]AppInfo, error) {
 		}
 
 		// Debug output (truncate for readability)
-		if len(body) > 500 {
-			fmt.Printf("Debug - GetAppList Raw API Response (page %d): %s...(truncated)\n", page, string(body[:500]))
-		} else {
-			fmt.Printf("Debug - GetAppList Raw API Response (page %d): %s\n", page, string(body))
+		if c.Verbose {
+			if len(body) > 500 {
+				fmt.Printf("Debug - GetAppList Raw API Response (page %d): %s...(truncated)\n", page, string(body[:500]))
+			} else {
+				fmt.Printf("Debug - GetAppList Raw API Response (page %d): %s\n", page, string(body))
+			}
 		}
 
 		// Parse response
@@ -380,17 +397,19 @@ func (c *Client) GetAppList() ([]AppInfo, error) {
 			allApps = append(allApps, app)
 		}
 
-		fmt.Printf("Debug - Parsed %d apps from page %d (total so far: %d)\n", len(dataArray), page, len(allApps))
+		if c.Verbose {
+			fmt.Printf("Debug - Parsed %d apps from page %d (total so far: %d)\n", len(dataArray), page, len(allApps))
+		}
 
 		// Check if there are more pages
 		hasMore, _ := rawData["has_more"].(bool)
 		if !hasMore {
 			break
 		}
-
-		page++
 	}
 
-	fmt.Printf("Debug - Total apps fetched: %d\n", len(allApps))
+	if c.Verbose {
+		fmt.Printf("Debug - Total apps fetched: %d\n", len(allApps))
+	}
 	return allApps, nil
 }

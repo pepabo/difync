@@ -4,6 +4,8 @@
 *.dll
 *.so
 *.dylib
+difync
+difync-test
 
 # Test binary, built with `go test -c`
 *.test
@@ -17,6 +19,9 @@ go.work
 
 # Environment variables
 .env
+
+# Cookie files
+cookies*.txt
 
 # DSL files and app map
 /dsl/
