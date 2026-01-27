@@ -325,30 +325,33 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 					counter++
 				}
 
-				if !s.config.DryRun {
-					// Rename the file
-					oldPath := filepath.Join(s.config.DSLDirectory, app.Filename)
-					newPath := filepath.Join(s.config.DSLDirectory, expectedFilename)
+				// Only rename if the expected filename is different from current
+				if app.Filename != expectedFilename {
+					if !s.config.DryRun {
+						// Rename the file
+						oldPath := filepath.Join(s.config.DSLDirectory, app.Filename)
+						newPath := filepath.Join(s.config.DSLDirectory, expectedFilename)
 
-					if err := os.Rename(oldPath, newPath); err != nil {
-						fmt.Printf("Warning: Failed to rename file %s to %s: %v\n", oldPath, newPath, err)
-					} else if s.config.Verbose {
-						fmt.Printf("Renamed file from %s to %s\n", oldPath, newPath)
+						if err := os.Rename(oldPath, newPath); err != nil {
+							fmt.Printf("Warning: Failed to rename file %s to %s: %v\n", oldPath, newPath, err)
+						} else if s.config.Verbose {
+							fmt.Printf("Renamed file from %s to %s\n", oldPath, newPath)
+						}
 					}
+
+					// Record the name change
+					nameChanges[app.Filename] = expectedFilename
+
+					// Update the app mapping
+					newMapping := AppMapping{
+						Filename: expectedFilename,
+						AppID:    app.AppID,
+					}
+					renamedApps = append(renamedApps, newMapping)
+
+					// Don't process this app further in this iteration
+					continue
 				}
-
-				// Record the name change
-				nameChanges[app.Filename] = expectedFilename
-
-				// Update the app mapping
-				newMapping := AppMapping{
-					Filename: expectedFilename,
-					AppID:    app.AppID,
-				}
-				renamedApps = append(renamedApps, newMapping)
-
-				// Don't process this app further in this iteration
-				continue
 			}
 		}
 
