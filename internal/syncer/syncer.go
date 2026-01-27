@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -39,6 +40,7 @@ type DefaultSyncer struct {
 // NewSyncer creates a new syncer with the given configuration
 func NewSyncer(config Config) Syncer {
 	client := api.NewClient(config.DifyBaseURL)
+	client.Verbose = config.Verbose
 
 	// Login to get token
 	if err := client.Login(config.DifyEmail, config.DifyPassword); err != nil {
@@ -171,7 +173,9 @@ func (s *DefaultSyncer) fileExists(path string) bool {
 // generateUniqueFilename generates a unique filename for an app, avoiding duplicates
 func (s *DefaultSyncer) generateUniqueFilename(appName string, usedFilenames map[string]bool) string {
 	safeName := s.sanitizeFilename(appName)
-	fmt.Printf("Debug - sanitizeFilename(%q) = %q\n", appName, safeName)
+	if s.config.Verbose {
+		fmt.Printf("Debug - sanitizeFilename(%q) = %q\n", appName, safeName)
+	}
 	filename := safeName + ".yaml"
 
 	// Check if file exists in filesystem or already used in map
@@ -183,14 +187,18 @@ func (s *DefaultSyncer) generateUniqueFilename(appName string, usedFilenames map
 
 	// Loop until a unique filename is found
 	for fileExists || filenameUsed {
-		fmt.Printf("Debug - File exists or already used: %s, incrementing counter to %d\n", filename, counter)
+		if s.config.Verbose {
+			fmt.Printf("Debug - File exists or already used: %s, incrementing counter to %d\n", filename, counter)
+		}
 		filename = fmt.Sprintf("%s_%d.yaml", baseName, counter)
 		fileExists = s.fileExists(filepath.Join(s.config.DSLDirectory, filename))
 		filenameUsed = usedFilenames[filename]
 		counter++
 	}
 
-	fmt.Printf("Debug - Final filename for app %q: %s\n", appName, filename)
+	if s.config.Verbose {
+		fmt.Printf("Debug - Final filename for app %q: %s\n", appName, filename)
+	}
 	return filename
 }
 
@@ -228,7 +236,6 @@ func (s *DefaultSyncer) sanitizeFilename(name string) string {
 		return "app"
 	}
 
-	fmt.Printf("Debug - sanitizeFilename internal: %q -> %q\n", name, result.String())
 	return result.String()
 }
 
@@ -377,48 +384,62 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 		usedFilenames[app.Filename] = true
 	}
 
-	newApps := []AppMapping{}
-	for appID, appInfo := range remoteApps {
+	// Collect new app IDs and sort them for deterministic order
+	var newAppIDs []string
+	for appID := range remoteApps {
 		if !existingAppIDs[appID] {
-			// New app found
-			filename := s.generateUniqueFilename(appInfo.Name, usedFilenames)
-			usedFilenames[filename] = true
+			newAppIDs = append(newAppIDs, appID)
+		}
+	}
+	sort.Strings(newAppIDs)
 
-			newApp := AppMapping{
-				Filename: filename,
-				AppID:    appID,
-			}
+	newApps := []AppMapping{}
+	for _, appID := range newAppIDs {
+		appInfo := remoteApps[appID]
+		// New app found
+		filename := s.generateUniqueFilename(appInfo.Name, usedFilenames)
+		usedFilenames[filename] = true
 
-			if s.config.Verbose {
-				fmt.Printf("New app found: %s (ID: %s) -> %s\n", appInfo.Name, appID, filename)
-			}
+		newApp := AppMapping{
+			Filename: filename,
+			AppID:    appID,
+		}
 
-			// Download DSL for new app
-			localPath := filepath.Join(s.config.DSLDirectory, filename)
-			if !s.config.DryRun {
-				dsl, err := s.client.GetDSL(appID)
-				if err != nil {
-					fmt.Printf("Warning: Failed to download DSL for new app %s: %v\n", appInfo.Name, err)
-					stats.Errors++
-					continue
-				}
+		if s.config.Verbose {
+			fmt.Printf("New app found: %s (ID: %s) -> %s\n", appInfo.Name, appID, filename)
+		}
 
-				if err := os.WriteFile(localPath, dsl, 0644); err != nil {
-					fmt.Printf("Warning: Failed to write DSL file for new app %s: %v\n", appInfo.Name, err)
-					stats.Errors++
-					continue
-				}
-
-				if s.config.Verbose {
-					fmt.Printf("Downloaded DSL for new app %s to %s\n", appInfo.Name, localPath)
-				}
-			}
-
-			// Only add to newApps after successful download and write
+		// Download DSL for new app
+		localPath := filepath.Join(s.config.DSLDirectory, filename)
+		if s.config.DryRun {
+			fmt.Printf("Dry run: Would download DSL for new app %s to %s\n", appInfo.Name, localPath)
 			newApps = append(newApps, newApp)
 			stats.Added++
 			stats.Total++
+			continue
 		}
+
+		dsl, err := s.client.GetDSL(appID)
+		if err != nil {
+			fmt.Printf("Warning: Failed to download DSL for new app %s: %v\n", appInfo.Name, err)
+			stats.Errors++
+			continue
+		}
+
+		if err := os.WriteFile(localPath, dsl, 0644); err != nil {
+			fmt.Printf("Warning: Failed to write DSL file for new app %s: %v\n", appInfo.Name, err)
+			stats.Errors++
+			continue
+		}
+
+		if s.config.Verbose {
+			fmt.Printf("Downloaded DSL for new app %s to %s\n", appInfo.Name, localPath)
+		}
+
+		// Only add to newApps after successful download and write
+		newApps = append(newApps, newApp)
+		stats.Added++
+		stats.Total++
 	}
 
 	// Update app map if apps were deleted, renamed, or added
@@ -551,7 +572,9 @@ func (s *DefaultSyncer) SyncApp(app AppMapping) SyncResult {
 		return result
 	}
 
-	fmt.Printf("Debug - App Info for %s: %+v\n", app.AppID, appInfo)
+	if s.config.Verbose {
+		fmt.Printf("Debug - App Info for %s: %+v\n", app.AppID, appInfo)
+	}
 
 	// Convert interface{} updated_at to time.Time
 	var remoteModTime time.Time
@@ -559,7 +582,9 @@ func (s *DefaultSyncer) SyncApp(app AppMapping) SyncResult {
 
 	if appInfo.UpdatedAt == nil {
 		// If UpdatedAt is nil, use a time in the past to ensure the local file is considered newer
-		fmt.Printf("Debug - UpdatedAt is nil, using past timestamp to prioritize local file\n")
+		if s.config.Verbose {
+			fmt.Printf("Debug - UpdatedAt is nil, using past timestamp to prioritize local file\n")
+		}
 		// Use Unix epoch start as the remote time (1970-01-01) to ensure local is newer
 		remoteModTime = time.Unix(0, 0)
 		useLocalTime = true
@@ -592,45 +617,63 @@ func (s *DefaultSyncer) SyncApp(app AppMapping) SyncResult {
 				}
 			} else {
 				// Empty string, treat as nil case
-				fmt.Printf("Debug - UpdatedAt is empty string, using past timestamp to prioritize local file\n")
+				if s.config.Verbose {
+					fmt.Printf("Debug - UpdatedAt is empty string, using past timestamp to prioritize local file\n")
+				}
 				remoteModTime = time.Unix(0, 0)
 				useLocalTime = true
 			}
 		case float64:
 			// For numeric type: interpret as UNIX timestamp (seconds)
 			remoteModTime = time.Unix(int64(v), 0)
-			fmt.Printf("Debug - Converted float64 timestamp %v to time: %v\n", v, remoteModTime)
+			if s.config.Verbose {
+				fmt.Printf("Debug - Converted float64 timestamp %v to time: %v\n", v, remoteModTime)
+			}
 		case int:
 			// For integer type: interpret as UNIX timestamp (seconds)
 			remoteModTime = time.Unix(int64(v), 0)
-			fmt.Printf("Debug - Converted int timestamp %v to time: %v\n", v, remoteModTime)
+			if s.config.Verbose {
+				fmt.Printf("Debug - Converted int timestamp %v to time: %v\n", v, remoteModTime)
+			}
 		case int64:
 			// For 64-bit integer: interpret as UNIX timestamp
 			remoteModTime = time.Unix(v, 0)
-			fmt.Printf("Debug - Converted int64 timestamp %v to time: %v\n", v, remoteModTime)
+			if s.config.Verbose {
+				fmt.Printf("Debug - Converted int64 timestamp %v to time: %v\n", v, remoteModTime)
+			}
 		case json.Number:
 			// For json.Number type
 			if i, err := v.Int64(); err == nil {
 				remoteModTime = time.Unix(i, 0)
-				fmt.Printf("Debug - Converted json.Number timestamp %v to time: %v\n", v, remoteModTime)
+				if s.config.Verbose {
+					fmt.Printf("Debug - Converted json.Number timestamp %v to time: %v\n", v, remoteModTime)
+				}
 			} else {
 				// If conversion fails, treat as nil case
-				fmt.Printf("Debug - Could not convert json.Number %v to timestamp, using past timestamp\n", v)
+				if s.config.Verbose {
+					fmt.Printf("Debug - Could not convert json.Number %v to timestamp, using past timestamp\n", v)
+				}
 				remoteModTime = time.Unix(0, 0)
 				useLocalTime = true
 			}
 		default:
-			fmt.Printf("Debug - Unknown type for UpdatedAt: %T value: %v, using past timestamp\n", appInfo.UpdatedAt, appInfo.UpdatedAt)
+			if s.config.Verbose {
+				fmt.Printf("Debug - Unknown type for UpdatedAt: %T value: %v, using past timestamp\n", appInfo.UpdatedAt, appInfo.UpdatedAt)
+			}
 			remoteModTime = time.Unix(0, 0)
 			useLocalTime = true
 		}
 	}
 
-	fmt.Printf("Debug - Local mod time: %v, Remote mod time: %v\n", localModTime, remoteModTime)
+	if s.config.Verbose {
+		fmt.Printf("Debug - Local mod time: %v, Remote mod time: %v\n", localModTime, remoteModTime)
+	}
 
 	// If UpdatedAt was nil or couldn't be parsed, don't sync
 	if useLocalTime {
-		fmt.Printf("Debug - No valid remote timestamp found, skipping sync\n")
+		if s.config.Verbose {
+			fmt.Printf("Debug - No valid remote timestamp found, skipping sync\n")
+		}
 		result.Action = ActionNone
 		result.Success = true
 		return result
