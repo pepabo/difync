@@ -192,6 +192,115 @@ func TestLoginErrors(t *testing.T) {
 	}
 }
 
+func TestLoginFallbackToPlainPassword(t *testing.T) {
+	testEmail := "test@example.com"
+	testPassword := "password123"
+	expectedEncodedPassword := base64.StdEncoding.EncodeToString([]byte(testPassword))
+	requestCount := 0
+
+	// Create a test server that rejects Base64 password (401) but accepts plain text
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+
+		body, _ := io.ReadAll(r.Body)
+		var loginData map[string]string
+		json.Unmarshal(body, &loginData)
+
+		if loginData["password"] == expectedEncodedPassword {
+			// First attempt with Base64 password: return 401
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error": "Invalid credentials"}`))
+			return
+		}
+
+		if loginData["password"] == testPassword {
+			// Second attempt with plain text password: return success with cookie
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Host-access_token",
+				Value: "fallback-access-token",
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"result": "success"}`))
+			return
+		}
+
+		t.Errorf("Unexpected password: %s", loginData["password"])
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	err := client.Login(testEmail, testPassword)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if requestCount != 2 {
+		t.Errorf("Expected 2 requests (Base64 then plain), got %d", requestCount)
+	}
+
+	if client.token != "fallback-access-token" {
+		t.Errorf("Expected token to be 'fallback-access-token', got '%s'", client.token)
+	}
+}
+
+func TestLoginFallbackToPlainPasswordNoToken(t *testing.T) {
+	testEmail := "test@example.com"
+	testPassword := "password123"
+	expectedEncodedPassword := base64.StdEncoding.EncodeToString([]byte(testPassword))
+	requestCount := 0
+
+	// Create a test server that returns 200 without token for Base64, then success for plain text
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+
+		body, _ := io.ReadAll(r.Body)
+		var loginData map[string]string
+		json.Unmarshal(body, &loginData)
+
+		if loginData["password"] == expectedEncodedPassword {
+			// First attempt with Base64 password: return 200 but no token
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"result": "success"}`))
+			return
+		}
+
+		if loginData["password"] == testPassword {
+			// Second attempt with plain text password: return success with cookie
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Host-access_token",
+				Value: "plain-text-token",
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"result": "success"}`))
+			return
+		}
+
+		t.Errorf("Unexpected password: %s", loginData["password"])
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	err := client.Login(testEmail, testPassword)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if requestCount != 2 {
+		t.Errorf("Expected 2 requests (Base64 then plain), got %d", requestCount)
+	}
+
+	if client.token != "plain-text-token" {
+		t.Errorf("Expected token to be 'plain-text-token', got '%s'", client.token)
+	}
+}
+
 func TestGetAppInfo(t *testing.T) {
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

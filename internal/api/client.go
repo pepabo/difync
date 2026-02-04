@@ -45,17 +45,29 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
-// Login authenticates with Dify API using email and password
+// Login authenticates with Dify API using email and password.
+// It first tries Base64-encoded password (Dify >= 1.11.4), then falls back
+// to plain text password (Dify < 1.11.4) if the first attempt fails.
 func (c *Client) Login(email, password string) error {
-	url := fmt.Sprintf("%s/console/api/login", c.BaseURL)
-
-	// Encode password with Base64 (required by new Dify API)
+	// 1. Try Base64 encoded password (Dify >= 1.11.4)
 	encodedPassword := base64.StdEncoding.EncodeToString([]byte(password))
+	err := c.loginWithPassword(email, encodedPassword)
+	if err == nil {
+		return nil
+	}
+
+	// 2. Fallback: try plain text password (Dify < 1.11.4)
+	return c.loginWithPassword(email, password)
+}
+
+// loginWithPassword performs the actual login request with the given password value.
+func (c *Client) loginWithPassword(email, password string) error {
+	url := fmt.Sprintf("%s/console/api/login", c.BaseURL)
 
 	// Create login payload
 	loginData := map[string]string{
 		"email":    email,
-		"password": encodedPassword,
+		"password": password,
 	}
 
 	payload, err := json.Marshal(loginData)
