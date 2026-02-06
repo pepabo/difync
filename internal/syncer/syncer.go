@@ -267,6 +267,12 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 	nameChanges := make(map[string]string) // old filename -> new filename
 	renamedApps := []AppMapping{}          // Updated app mappings
 
+	// Track used filenames for deduplication (initialized early for rename processing)
+	usedFilenames := make(map[string]bool)
+	for _, app := range appMap.Apps {
+		usedFilenames[app.Filename] = true
+	}
+
 	// First, check for remote apps that have been deleted
 	deletedApps := []AppMapping{}
 
@@ -297,6 +303,9 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 
 			// Count as download since we're reflecting remote state
 			stats.Downloads++
+
+			// Remove the deleted app's filename from usedFilenames
+			delete(usedFilenames, app.Filename)
 			continue
 		}
 
@@ -313,15 +322,18 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 						app.Filename, app.AppID, app.Filename, expectedFilename)
 				}
 
-				// Check if file exists in filesystem
+				// Check if file exists in filesystem or is used by another app in app_map
+				// Note: exclude self (app.Filename) from usedFilenames check since we're renaming it
 				fileExists := s.fileExists(filepath.Join(s.config.DSLDirectory, expectedFilename))
+				filenameUsedByOther := usedFilenames[expectedFilename] && expectedFilename != app.Filename
 				counter := 1
 				baseName := safeName
 
-				// Loop until a unique filename is found
-				for fileExists {
+				// Loop until a unique filename is found (check both filesystem and app_map)
+				for fileExists || filenameUsedByOther {
 					expectedFilename = fmt.Sprintf("%s_%d.yaml", baseName, counter)
 					fileExists = s.fileExists(filepath.Join(s.config.DSLDirectory, expectedFilename))
+					filenameUsedByOther = usedFilenames[expectedFilename] && expectedFilename != app.Filename
 					counter++
 				}
 
@@ -341,6 +353,10 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 
 					// Record the name change
 					nameChanges[app.Filename] = expectedFilename
+
+					// Update usedFilenames: remove old, add new
+					delete(usedFilenames, app.Filename)
+					usedFilenames[expectedFilename] = true
 
 					// Update the app mapping
 					newMapping := AppMapping{
@@ -381,11 +397,7 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 		existingAppIDs[app.AppID] = true
 	}
 
-	// Track used filenames for deduplication
-	usedFilenames := make(map[string]bool)
-	for _, app := range appMap.Apps {
-		usedFilenames[app.Filename] = true
-	}
+	// Note: usedFilenames is already initialized earlier and updated during delete/rename processing
 
 	// Collect new app IDs and sort them for deterministic order
 	var newAppIDs []string
