@@ -323,16 +323,16 @@ func (s *DefaultSyncer) SyncAll() (*SyncStats, error) {
 				}
 
 				// Check if file exists in filesystem or is used by another app in app_map
-				// Note: exclude self (app.Filename) from usedFilenames check since we're renaming it
-				fileExists := s.fileExists(filepath.Join(s.config.DSLDirectory, expectedFilename))
+				// Note: exclude self (app.Filename) from both checks since we're renaming it
+				fileExistsAndNotSelf := s.fileExists(filepath.Join(s.config.DSLDirectory, expectedFilename)) && expectedFilename != app.Filename
 				filenameUsedByOther := usedFilenames[expectedFilename] && expectedFilename != app.Filename
 				counter := 1
 				baseName := safeName
 
 				// Loop until a unique filename is found (check both filesystem and app_map)
-				for fileExists || filenameUsedByOther {
+				for fileExistsAndNotSelf || filenameUsedByOther {
 					expectedFilename = fmt.Sprintf("%s_%d.yaml", baseName, counter)
-					fileExists = s.fileExists(filepath.Join(s.config.DSLDirectory, expectedFilename))
+					fileExistsAndNotSelf = s.fileExists(filepath.Join(s.config.DSLDirectory, expectedFilename)) && expectedFilename != app.Filename
 					filenameUsedByOther = usedFilenames[expectedFilename] && expectedFilename != app.Filename
 					counter++
 				}
